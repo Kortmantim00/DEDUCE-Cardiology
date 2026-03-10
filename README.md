@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Logo" width="320"/>
+</p>
+
 # DEDUCE De-identification Pipelines
 
 This repository contains two small Python pipelines that demonstrate how to
@@ -111,6 +115,9 @@ Medical terms that happen to be eponymous (named after people) are preserved to 
 
 These terms are detected in a whitelist and filtered out of the annotation results before placeholder replacement, ensuring they remain readable in the output.
 
+<p align="center">
+  <img src="Anonymization flow.png" alt="Flow" width="520"/>
+</p>
 
 ## Installation
 
