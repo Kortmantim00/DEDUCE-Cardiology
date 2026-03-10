@@ -92,7 +92,7 @@ Logging is configured to capture warnings only (no sensitive data to stdout); ca
 
 #### Direct identifiers (fully anonymized)
 
-- **Person identification**: DEDUCE identifies `PERSOON` tags. The first one encountered is marked as `[PATIËNT]` (the patient); all others are replaced with `[PERSOON]` (other people mentioned in the document).
+- **Person identification**: DEDUCE identifies `PERSOON` tags. The first one encountered in the "betreft" phrase is `[PATIËNT]` (the patient); all others are replaced with `[PERSOON]` (other people mentioned in the document).
 - **Contact information**: Email addresses → `[EMAIL]`, phone numbers → `[TELEFOONNUMMER]`, locations → `[LOCATIE]`.
 
 #### Quasi-identifiers (categorized/shifted)
@@ -233,3 +233,7 @@ for ensuring 100% recall on all personal information.
 ## License
 
 This code is provided as-is for demonstration purposes.
+
+## Contact
+For questions, please reach out the the author
+Tim Kortman - t.kortman@erasmusmc.nl
