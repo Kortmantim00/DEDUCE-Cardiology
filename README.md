@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logologin.png" alt="Logo" width="220"/>
+</p>
+
 # DEDUCE De-identification Pipelines
 
 This repository contains two small Python pipelines that demonstrate how to
