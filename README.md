@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logologin.png" alt="Logo" width="220"/>
+  <img src="logo.png" alt="Logo" width="220"/>
 </p>
 
 # DEDUCE De-identification Pipelines
