@@ -5,8 +5,8 @@ use the [**DEDUCE**](https://pypi.org/project/deduce) library to de‑identify
 Dutch free-text in the domain of cardiology. Text can be extracted from either 
 PDF documents or CSV files, and is returned into a PDF document.
 The goal is to provide a minimal, secure workflow that can be executed from 
-the command line or imported as a library.  All code is written in English 
-with comprehensive docstrings.
+the command line or imported as a library.  De-identification is in Dutch, but
+All code is written in English with comprehensive docstrings.
 
 ## Research context and motivation
 

@@ -20,6 +20,7 @@ if USE_PDF_PIPELINE:
     INPUT_PDFS = [
         Path(r"Input\document1.pdf"),
         # Path(r"Input\document2.pdf"),
+        # ...
     ]
 
     OUTPUT_DIR = Path("Output")

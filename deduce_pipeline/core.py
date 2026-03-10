@@ -431,7 +431,8 @@ def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optiona
     )
 
     # Track if we've seen the first "persoon" annotation yet
-    first_person_seen = False
+    person_indices = [i for i, a in enumerate(annotations) if getattr(a, "tag", "").lower() == "persoon"]
+    patient_indices = person_indices[-2:]  # first "persoon" becomes "PATIËNT"
 
     for idx, a in enumerate(annotations):
         tag = getattr(a, "tag", "").lower()
@@ -448,10 +449,9 @@ def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optiona
                 age_category = "[Leeftijd onbekend]"
                 placeholder = age_category
         elif tag == "persoon":
-            # First persoon becomes PATIËNT, rest are PERSOON
-            if not first_person_seen:
+            # "patient" persoon becomes PATIËNT, rest are PERSOON
+            if idx in patient_indices:
                 placeholder = "[PATIËNT]"
-                first_person_seen = True
             else:
                 placeholder = "[PERSOON]"
         else:
