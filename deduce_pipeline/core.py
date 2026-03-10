@@ -1,0 +1,470 @@
+"""Shared utilities for DEDUCE pipelines.
+
+This module centralizes common functionality used by both the PDF and CSV
+pipelines, making the code easier to maintain and review. It includes:
+
+* secure initialization of the :class:`deduce.Deduce` instance with
+temporary cache directories and optional logging
+* PDF writing helpers (ReportLab wrappers)
+* Text preprocessing, CID code fixes, and anonymization helpers
+* Custom de‑identification post‑processing on top of DEDUCE output
+
+All functions are written in English and thoroughly documented for
+GitHub representation.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Tuple, Iterable
+
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+
+from deduce import Deduce
+
+
+# ---------------------------------------------------------------------------
+# secure Deduce initialization
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SecureDeduce:
+    """Container holding a :class:`deduce.Deduce` instance along with
+    supporting objects that must remain alive for the duration of a run.
+
+    The temporary directory is kept as an attribute so that it isn't
+    garbage‑collected before the caller is finished with the cache/log
+    files.
+    """
+
+    deduce: Deduce
+    tempdir: tempfile.TemporaryDirectory
+    log_file: Optional[Path]
+
+
+def init_deduce_secure(write_log_file: bool = True, log_dir: Path | None = None) -> SecureDeduce:
+    """Initialize a **secure** Deduce instance.
+
+    The returned object contains a :class:`Deduce` instance whose cache
+    directory has mode ``700`` (when possible) and which is configured
+    to log warnings only.  If ``write_log_file`` is ``True`` a file
+    handler is installed; the caller is responsible for calling
+    :func:`close_logging_handlers` before the temporary directory is
+    cleaned up.
+
+    Args:
+        write_log_file: whether to add a file handler for warnings.
+        log_dir: explicit directory to write the logfile to; if ``None`` a
+            safe temporary directory is used.
+
+    Returns:
+        A :class:`SecureDeduce` container.
+    """
+    tmp = tempfile.TemporaryDirectory()
+
+    # choose cache path
+    if log_dir:
+        cache_path = Path(log_dir)
+        cache_path.mkdir(parents=True, exist_ok=True)
+    else:
+        cache_path = Path(tmp.name)
+
+    # try to make it private; ignore failures (Windows, etc.)
+    try:
+        os.chmod(cache_path, 0o700)
+    except Exception:  # pragma: no cover - best effort
+        pass
+
+    # reset root logger to warnings only and remove existing handlers
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    root.setLevel(logging.WARNING)
+
+    log_file: Optional[Path] = None
+    if write_log_file:
+        log_file = cache_path / "deduce.log"
+        fh = logging.FileHandler(log_file, encoding="utf-8")
+        fh.setLevel(logging.WARNING)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
+        root.addHandler(fh)
+
+    logging.getLogger("deduce").propagate = False
+    logging.getLogger("deduce").setLevel(logging.WARNING)
+
+    deduce = Deduce(cache_path=str(cache_path))
+    return SecureDeduce(deduce=deduce, tempdir=tmp, log_file=log_file)
+
+
+def close_logging_handlers() -> None:
+    """Close all file handlers attached to the root logger.
+
+    The runner should call this before allowing the temporary directory to
+    be removed; otherwise the logfile may remain locked on Windows.
+    """
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if isinstance(handler, logging.FileHandler):
+            handler.close()
+            root.removeHandler(handler)
+
+
+# ---------------------------------------------------------------------------
+# PDF writing helpers
+# ---------------------------------------------------------------------------
+
+
+def _register_font_if_available() -> str:
+    """Attempt to register a Unicode TrueType font for ReportLab.
+
+    If one of the well‑known font paths exists the font is registered as
+    ``UserFont`` and its name returned.  Otherwise ``Helvetica`` is
+    used as a fallback.
+
+    Returns:
+        The font name to use in paragraph styles.
+    """
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/Library/Fonts/Arial.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            font_name = "UserFont"
+            try:
+                pdfmetrics.registerFont(TTFont(font_name, p))
+                return font_name
+            except Exception:  # pragma: no cover - best effort
+                pass
+    return "Helvetica"
+
+
+def write_text_to_pdf(text: str, output_pdf: Path, title: str) -> None:
+    """Render ``text`` into a simple PDF document.
+
+    Paragraph wrapping and basic styling are handled via ReportLab's
+    :class:`SimpleDocTemplate` and default stylesheet.
+
+    Args:
+        text: The body text to write.  Blank strings are accepted.
+        output_pdf: Destination file (parent directories will be created).
+        title: Title to display on the first page.
+    """
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+
+    font_name = _register_font_if_available()
+
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+    title_style.fontName = font_name
+
+    normal = styles["Normal"]
+    normal.fontName = font_name
+    normal.fontSize = 11
+    normal.leading = 14
+
+    doc = SimpleDocTemplate(
+        str(output_pdf),
+        pagesize=A4,
+        rightMargin=30,
+        leftMargin=30,
+        topMargin=30,
+        bottomMargin=24,
+    )
+
+    story = [Paragraph(title, title_style), Spacer(1, 12)]
+    for para in (text or "").split("\n\n"):
+        para = para.replace("\n", "<br/>")
+        story.append(Paragraph(para, normal))
+        story.append(Spacer(1, 8))
+
+    doc.build(story)
+
+
+# ---------------------------------------------------------------------------
+# text helpers
+# ---------------------------------------------------------------------------
+
+
+def preprocess_text(text: str) -> str:
+    """Insert spaces in CamelCase words.
+
+    This makes strings such as ``"patientJohn"`` or
+    ``"drNaamJohannes"`` easier for DEDUCE to interpret as separate
+    tokens.
+    """
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+
+
+# the whitelist is reused by both pipelines; exposing getter makes it easier
+# to test
+
+def get_medical_terms_whitelist() -> set[str]:
+    """Return a set of lowercase medical terms that should *not* be
+    anonymized because they are eponymous or otherwise patient‑neutral.
+    """
+    return {
+        "apgar",
+        "glasgow",
+        "barthel",
+        "mini mental state",
+        "mmse",
+        "folstein",
+        "karnofsky",
+        "ecog",
+        "who",
+        "asa",
+        "mallampati",
+        "bromage",
+        "ramsay",
+        "aldrete",
+        "stevens",
+        "pain scale",
+        "numeric rating scale",
+        "nrs",
+        "visual analogue scale",
+        "vas",
+        "faces pain scale",
+        "fps",
+        "kilip",
+        "forrester",
+        "wells",
+        "sgarbossa",
+        "smith",
+        "chadvasc",
+        "kussmaul",
+        "cheyne stokes",
+        "biot",
+        "atrial fibrillation",
+        "afib",
+        "ventricular tachycardia",
+        "vtach",
+        "torsades de pointes",
+        "tdp",
+        "brugada",
+        "long qt syndrome",
+        "lqts",
+        "wolff parkinson white",
+        "wpw",
+        "ekg",
+        "ecg",
+        "electrocardiogram",
+        "wellens",
+        "de winter",
+        "osborn",
+        "cabrera",
+        "ewart",
+        "levine",
+        "beck",
+        "hamman",
+        "seldinger",
+        "circle of willis",
+        "foramen of monro",
+        "aqueduct of sylvius",
+        "duct of wirsung",
+        "ampulla of vater",
+        "triangle of koch",
+        "hepatojugular reflux",
+        "hepatojugular",
+        "hepato-jugular",
+        "pemberton",
+        "pemberton's sign",
+        "rovsing",
+        "rovsing's sign",
+        "murphy",
+        "murphy's sign",
+        "blumberg",
+        "blumberg's sign",
+        "mc burney",
+        "mcburney",
+        "mcburney's point",
+        "balthazar",
+    }
+
+
+def filter_medical_terms(annotations: Iterable) -> list:
+    """Return a new list of annotations omitting medical terms.
+
+    An annotation object is expected to have ``tag`` and ``text``
+    attributes.  Matching is case‑insensitive.  Any annotation whose text
+    exactly matches a whitelisted term is dropped; a heuristic also skips
+    annotations that are a short phrase containing a whitelisted term.
+    """
+    whitelist = get_medical_terms_whitelist()
+    out = []
+    for ann in annotations:
+        tag = getattr(ann, "tag", "").lower()
+        text = getattr(ann, "text", "").lower().strip()
+        if text in whitelist:
+            continue
+        for term in whitelist:
+            if term in text and len(text) <= len(term) + 10:
+                break
+        else:  # not broken
+            out.append(ann)
+    return out
+
+
+def fix_cid_codes(text: str) -> str:
+    """Replace common PDF "cid" ligature codes with likely characters.
+
+    When ``pdfplumber`` fails to decode certain ligatures it inserts tokens
+    such as ``"(cid:431)"``.  These are usually ``ff``/``ffi``/``ffl``.
+    """
+    cid_mapping = {"(cid:431)": "ff", "(cid:432)": "ffi", "(cid:433)": "ffl"}
+    result = text
+    for cid_code, replacement in cid_mapping.items():
+        result = result.replace(cid_code, replacement)
+    return result
+
+
+def anonymize_months(text: str) -> str:
+    """Replace Dutch month names (full and abbreviated) with ``[MAAND]``.
+
+    The replacement is case‑insensitive and handles common abbreviations.
+    """
+    month_patterns = [
+        (r"\bjanuar[iy]\b", "[MAAND]"),
+        (r"\bjan(?:\.|uari|uary)?\b", "[MAAND]"),
+        (r"\bfebru?ar[iy]\b", "[MAAND]"),
+        (r"\bfeb(?:\.|ruary)?\b", "[MAAND]"),
+        (r"\bmaart\b", "[MAAND]"),
+        (r"\bmrt\.?\b", "[MAAND]"),
+        (r"\bapril\b", "[MAAND]"),
+        (r"\bapr(?:\.|il)?\b", "[MAAND]"),
+        (r"\bmei\b", "[MAAND]"),
+        (r"\bjuni\b", "[MAAND]"),
+        (r"\bjun(?:\.|i)?\b", "[MAAND]"),
+        (r"\bjuli\b", "[MAAND]"),
+        (r"\bjul(?:\.|i)?\b", "[MAAND]"),
+        (r"\baugustus\b", "[MAAND]"),
+        (r"\baug(?:\.|ustus)?\b", "[MAAND]"),
+        (r"\bseptember\b", "[MAAND]"),
+        (r"\bsep(?:\.|tember)?\b", "[MAAND]"),
+        (r"\boktober\b", "[MAAND]"),
+        (r"\bokt(?:\.|ober)?\b", "[MAAND]"),
+        (r"\bnovember\b", "[MAAND]"),
+        (r"\bnov(?:\.|ember)?\b", "[MAAND]"),
+        (r"\bdecember\b", "[MAAND]"),
+        (r"\bdec(?:\.|ember)?\b", "[MAAND]"),
+    ]
+    result = text
+    for pattern, replacement in month_patterns:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+    return result
+
+
+def anonymize_years(text: str) -> str:
+    """Replace 4-digit years with relative placeholders.
+
+    First any explicit dates such as ``01-02-2020`` are converted to
+    ``[DATUM]``.  Then the remaining four-digit years in the range 1900–2099
+    are walked through: the newest year becomes ``[JAAR 0]`` and earlier
+    years are offset accordingly (``[JAAR -3]`` etc.).
+    """
+    date_pattern = r"\b\d{1,2}[-\./]\d{1,2}[-\./](?:\d{2}|\d{4})\b"
+    result = re.sub(date_pattern, "[DATUM]", text)
+
+    year_pattern = r"\b(19\d{2}|20\d{2})\b"
+    matches = list(re.finditer(year_pattern, result))
+    if not matches:
+        return result
+
+    years = sorted({int(m.group(1)) for m in matches})
+    if not years:
+        return result
+
+    base_year = max(years)
+    year_mapping = {year: f"[JAAR {year - base_year}]" for year in years}
+
+    for match in reversed(matches):
+        year = int(match.group(1))
+        replacement = year_mapping.get(year, f"[JAAR {year - base_year}]")
+        start, end = match.span()
+        result = result[:start] + replacement + result[end:]
+
+    return result
+
+
+def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optional[str]]:
+    """Perform additional anonymization on top of a *Deduce* result.
+
+    The following rules are applied in order:
+
+    1. ``Age`` tags are replaced with either ``[Leeftijd >=50]`` or ``[Leeftijd <50]``
+       (numeric decoding; fall back to ``[Leeftijd onbekend]``).
+    2. ``Person`` tags: the **first** one encountered in the annotations becomes
+       ``[PATIËNT]``; all others are ``[PERSOON]``.
+    3. A few other tags are mapped to fixed placeholders (email, phone,
+       location); all others are replaced with ``[TAG]``.
+
+    After this function returns the caller may wish to run
+    :func:`anonymize_months` and :func:`anonymize_years` on the output.
+
+    Args:
+        doc: object returned by ``deduce.deidentify``; expected to have an
+            ``annotations`` iterable attribute.
+        original_text: the unmodified input string; used when character
+            offsets in the annotations are available.
+
+    Returns:
+        ``(processed_text, age_category)``; ``age_category`` is the string
+        that replaced any age tag or ``None`` if no age was found.
+    """
+    age_category: Optional[str] = None
+    out = original_text
+
+    annotations = sorted(
+        getattr(doc, "annotations", []),
+        key=lambda a: getattr(a, "start_char", 0),
+        reverse=True,
+    )
+
+    # Track if we've seen the first "persoon" annotation yet
+    first_person_seen = False
+
+    for idx, a in enumerate(annotations):
+        tag = getattr(a, "tag", "").lower()
+        orig = getattr(a, "text", "")
+        start = getattr(a, "start_char", None)
+        end = getattr(a, "end_char", None)
+
+        if tag in ("leeftijd", "age"):
+            try:
+                age = int(orig)
+                age_category = "[Leeftijd >=50]" if age >= 50 else "[Leeftijd <50]"
+                placeholder = age_category
+            except Exception:
+                age_category = "[Leeftijd onbekend]"
+                placeholder = age_category
+        elif tag == "persoon":
+            # First persoon becomes PATIËNT, rest are PERSOON
+            if not first_person_seen:
+                placeholder = "[PATIËNT]"
+                first_person_seen = True
+            else:
+                placeholder = "[PERSOON]"
+        else:
+            tag_mapping = {
+                "emailadres": "[EMAIL]",
+                "telefoonnummer": "[TELEFOONNUMMER]",
+                "locatie": "[LOCATIE]",
+            }
+            placeholder = tag_mapping.get(tag, f"[{tag.upper()}]" if tag else "[ONBEKEND]")
+
+        if start is not None and end is not None and 0 <= start <= end <= len(out):
+            out = out[:start] + placeholder + out[end:]
+        elif orig:
+            out = out.replace(orig, placeholder, 1)
+
+    return out, age_category
