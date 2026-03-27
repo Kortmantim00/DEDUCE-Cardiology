@@ -13,7 +13,7 @@ the command line or imported as a library.  De-identification is in Dutch, but
 All code is written in English with comprehensive docstrings.
 
 ## Evidence
-During preliminary testing of 12 discharge letters, a recall of 0.75 was achieved for DEDUCE and a recall of 0.91 for DEDUCE-Cardiology (n=263 PII). 
+During preliminary testing of 12 discharge letters, a recall of 0.75 was achieved for DEDUCE and a *recall* of *0.91* for DEDUCE-Cardiology (n=263 PII). 
 DEDUCE-Cardiology contained 24 false negatives, all of which were indirectly related to the patient (name of the doctor on duty, GP’s address, etc.) and were not primary identifiers. 
 For both tools, manual revision is required to achieve recall 1.0.
 Both tools masked unnecessary text eight times (false positives), giving both tools a precision of 0.96.
