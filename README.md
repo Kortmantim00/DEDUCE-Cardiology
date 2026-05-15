@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="Logo" width="320"/>
+  <img src="media/logo.png" alt="Logo" width="320"/>
 </p>
 
 # DEDUCE De-identification Pipeline
@@ -10,7 +10,7 @@ A Python pipeline for de-identifying Dutch free-text in the domain of cardiology
 
 This pipeline was developed as part of a **clinical AI validation study at Erasmus MC**. The study validates a multi-agent, multi-modal clinical decision support tool based on LLMs and RAG on international cardiology guidelines.
 
-### Two-phase anonymization
+### Two-phase de-identification
 
 | Phase | Method | Goal |
 |---|---|---|
@@ -237,7 +237,7 @@ Applied on top of DEDUCE output:
 Eponymous terms are preserved to maintain clinical relevance: Glasgow, Barthel, Brugada, Wellens, De Winter, Wells, Sgarbossa, Murphy, circle of Willis, and many more. See `core.get_medical_terms_whitelist()` for the full list.
 
 <p align="center">
-  <img src="De-identification flow.png" alt="De-identification flow" width="1000"/>
+  <img src="media/De-identification flow.png" alt="De-identification flow" width="1000"/>
 </p>
 
 ---
