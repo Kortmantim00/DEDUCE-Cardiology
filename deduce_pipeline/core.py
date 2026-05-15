@@ -15,6 +15,8 @@ GitHub representation.
 
 from __future__ import annotations
 
+import datetime
+import json
 import logging
 import os
 import re
@@ -189,6 +191,113 @@ def write_text_to_pdf(text: str, output_pdf: Path, title: str) -> None:
         story.append(Spacer(1, 8))
 
     doc.build(story)
+
+
+def write_text_to_txt(text: str, output_path: Path) -> None:
+    """Write ``text`` as a plain UTF-8 text file."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(text, encoding="utf-8")
+
+
+def write_text_to_json(
+    text: str,
+    output_path: Path,
+    source_file: str,
+    admission_data: str = "",
+    diagnosis_and_plan: str = "",
+) -> None:
+    """Write ``text`` as a JSON file with metadata and optional split sections."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "source_file": source_file,
+        "processed_at": datetime.datetime.now().isoformat(),
+        "deidentified_text": text,
+        "admission_data": admission_data,
+        "diagnosis_and_plan": diagnosis_and_plan,
+    }
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+# ---------------------------------------------------------------------------
+# section splitting
+# ---------------------------------------------------------------------------
+
+# Names not reliably detected by DEDUCE that should always become [PERSOON]
+_CUSTOM_PERSON_NAMES: list[str] = [
+    "Jewbali", "Boon", "Dubois", "Akkerhuis", "Bunge", "Kimmann", "Ghossein",
+]
+
+# (prefix, bucket) — prefix is matched case-insensitively at line start
+_SECTION_RULES: list[tuple[str, str]] = [
+    ("reden van opname",          "admission"),
+    ("reden opname",              "admission"),
+    ("voorgeschiedenis",          "admission"),
+    ("anamnese",                  "admission"),
+    ("allergi",                   "admission"),  # allergieën, allergies
+    ("lichamelijk onderzoek",     "admission"),
+    ("electrocardiogram",         "admission"),
+    ("laboratorium",              "admission"),  # laboratorium onderzoek / laboratoriumonderzoek
+    ("radiologie",                "admission"),
+    ("echocardiogram",            "admission"),
+    ("coronairangiogram",         "admission"),
+    ("klinische elektrofysiologie", "admission"),
+    ("bespreking",                "plan"),
+    ("conclusie",                 "plan"),
+    ("beleid",                    "plan"),
+    ("medicatie",                 "plan"),
+]
+
+
+def _bucket_for_header(matched_text: str) -> str:
+    key = matched_text.lower()
+    for prefix, bucket in _SECTION_RULES:
+        if key.startswith(prefix):
+            return bucket
+    return "admission"
+
+
+def split_sections(text: str) -> Tuple[str, str]:
+    """Split de-identified text into admission data and diagnosis/plan.
+
+    Uses known Dutch discharge-letter section headers to assign each block
+    to one of two buckets.  Text before the first recognised header is
+    included in admission data.
+
+    Returns:
+        ``(admission_data, diagnosis_and_plan)``
+    """
+    prefixes = [re.escape(rule[0]) for rule in _SECTION_RULES]
+    pattern = re.compile(
+        r"(?m)^(" + "|".join(prefixes) + r")[^:\n]*:",
+        re.IGNORECASE,
+    )
+
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return text, ""
+
+    admission_parts: list[str] = []
+    plan_parts: list[str] = []
+
+    # text before the first recognised header → admission
+    intro = text[: matches[0].start()].strip()
+    if intro:
+        admission_parts.append(intro)
+
+    for i, match in enumerate(matches):
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        chunk = text[start:end].strip()
+        bucket = _bucket_for_header(match.group(1))
+        if bucket == "plan":
+            plan_parts.append(chunk)
+        else:
+            admission_parts.append(chunk)
+
+    return "\n\n".join(admission_parts), "\n\n".join(plan_parts)
 
 
 # ---------------------------------------------------------------------------
@@ -367,31 +476,45 @@ def anonymize_months(text: str) -> str:
 def anonymize_years(text: str) -> str:
     """Replace 4-digit years with relative placeholders.
 
-    First any explicit dates such as ``01-02-2020`` are converted to
-    ``[DATUM]``.  Then the remaining four-digit years in the range 1900–2099
-    are walked through: the newest year becomes ``[JAAR 0]`` and earlier
-    years are offset accordingly (``[JAAR -3]`` etc.).
+    Steps applied in order:
+    1. Full dates (dd-mm-yyyy, dd/mm/yyyy, dd.mm.yyyy) → [DATUM]
+    2. Partial dates without year (dd/mm, dd-mm) → [DATUM]
+    3. YYYY-MM patterns → [JAAR x] (entire expression collapsed)
+    4. Remaining standalone 4-digit years → [JAAR x]
+
+    The newest year found becomes [JAAR 0]; earlier years are offset
+    accordingly ([JAAR -1], [JAAR -3], etc.).
     """
-    date_pattern = r"\b\d{1,2}[-\./]\d{1,2}[-\./](?:\d{2}|\d{4})\b"
-    result = re.sub(date_pattern, "[DATUM]", text)
+    # Step 1: full dates dd-mm-yyyy / dd/mm/yyyy / dd.mm.yyyy
+    result = re.sub(r"\b\d{1,2}[-\./]\d{1,2}[-\./](?:\d{2}|\d{4})\b", "[DATUM]", text)
 
+    # Step 2: partial dates dd/mm and dd-mm (day 1-31, month 1-12)
+    result = re.sub(
+        r"\b(0?[1-9]|[12]\d|3[01])[/\-](0?[1-9]|1[0-2])\b",
+        "[DATUM]",
+        result,
+    )
+
+    # Determine base year from all remaining 4-digit years
     year_pattern = r"\b(19\d{2}|20\d{2})\b"
-    matches = list(re.finditer(year_pattern, result))
-    if not matches:
+    all_years = {int(m.group(1)) for m in re.finditer(year_pattern, result)}
+    if not all_years:
         return result
 
-    years = sorted({int(m.group(1)) for m in matches})
-    if not years:
-        return result
+    base_year = max(all_years)
+    year_mapping = {y: f"[JAAR {y - base_year}]" for y in all_years}
 
-    base_year = max(years)
-    year_mapping = {year: f"[JAAR {year - base_year}]" for year in years}
+    # Step 3: YYYY-MM → [JAAR x]  (collapse the entire expression)
+    def _replace_year_month(m: re.Match) -> str:
+        return year_mapping.get(int(m.group(1)), f"[JAAR {int(m.group(1)) - base_year}]")
 
-    for match in reversed(matches):
+    result = re.sub(r"\b(19\d{2}|20\d{2})-(0[1-9]|1[0-2])\b", _replace_year_month, result)
+
+    # Step 4: remaining standalone years
+    for match in reversed(list(re.finditer(year_pattern, result))):
         year = int(match.group(1))
-        replacement = year_mapping.get(year, f"[JAAR {year - base_year}]")
         start, end = match.span()
-        result = result[:start] + replacement + result[end:]
+        result = result[:start] + year_mapping.get(year, f"[JAAR {year - base_year}]") + result[end:]
 
     return result
 
@@ -430,11 +553,7 @@ def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optiona
         reverse=True,
     )
 
-    # Track if we've seen the first "persoon" annotation yet
-    person_indices = [i for i, a in enumerate(annotations) if getattr(a, "tag", "").lower() == "persoon"]
-    patient_indices = person_indices[-2:]  # first "persoon" becomes "PATIËNT"
-
-    for idx, a in enumerate(annotations):
+    for a in annotations:
         tag = getattr(a, "tag", "").lower()
         orig = getattr(a, "text", "")
         start = getattr(a, "start_char", None)
@@ -449,16 +568,16 @@ def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optiona
                 age_category = "[Leeftijd onbekend]"
                 placeholder = age_category
         elif tag == "persoon":
-            # "patient" persoon becomes PATIËNT, rest are PERSOON
-            if idx in patient_indices:
-                placeholder = "[PATIËNT]"
-            else:
-                placeholder = "[PERSOON]"
+            placeholder = "[PERSOON]"
+        elif tag == "locatie":
+            # Dosages like 3500IE / 3500IU / 3500IV look like Dutch postcodes — preserve them
+            if re.match(r"^\d+\s*[Ii][EeUuVv]$", orig):
+                continue
+            placeholder = "[LOCATIE]"
         else:
             tag_mapping = {
                 "emailadres": "[EMAIL]",
                 "telefoonnummer": "[TELEFOONNUMMER]",
-                "locatie": "[LOCATIE]",
             }
             placeholder = tag_mapping.get(tag, f"[{tag.upper()}]" if tag else "[ONBEKEND]")
 
@@ -466,5 +585,12 @@ def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optiona
             out = out[:start] + placeholder + out[end:]
         elif orig:
             out = out.replace(orig, placeholder, 1)
+
+    # Normalize numbered DEDUCE tags: [PERSOON-1] → [PERSOON], [ZIEKENHUIS-1] → [ZIEKENHUIS]
+    out = re.sub(r"\[([A-Z]+)-\d+\]", r"[\1]", out)
+
+    # Replace names not caught by DEDUCE
+    for name in _CUSTOM_PERSON_NAMES:
+        out = re.sub(rf"\b{re.escape(name)}\b", "[PERSOON]", out, flags=re.IGNORECASE)
 
     return out, age_category

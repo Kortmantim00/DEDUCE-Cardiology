@@ -1,29 +1,21 @@
-"""PDF → DEDUCE → PDF pipeline.
-
-This module exposes the same public ``run_pipeline`` interface as
-:mod:`deduce_pipeline.csv` but works with PDF input.  It uses
-``pdfplumber`` to extract the text before passing it to the core logic.
-"""
+"""PDF → DEDUCE → PDF/TXT/JSON pipeline."""
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
-from . import core
 import pdfplumber
+from . import core
 
-# default paths for the standalone script
-INPUT_PDF: Path = Path("document1.pdf")
-OUTPUT_DIR: Path = Path("output")
+OUTPUT_DIR: Path = Path("Output")
 
 
 def extract_text_from_pdf(pdf_path: Path) -> str:
-    """Extract all readable text from a PDF using :mod:`pdfplumber`.
+    """Extract all readable text from a PDF using pdfplumber.
 
-    Pages are separated by double newlines in the returned string.  If
-    the document contains no text, an empty string is returned.
+    Pages are separated by double newlines.  Returns an empty string when
+    no text can be extracted.
     """
     text_parts: list[str] = []
     with pdfplumber.open(str(pdf_path)) as pdf:
@@ -36,26 +28,51 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
 
 def run_pipeline(
     input_pdf: Path,
-    output_custom_pdf: Path | None,
-    output_deduce_pdf: Path | None,
-    output_dir: Path,
+    output_dir: Path = OUTPUT_DIR,
+    mode: str = "both",
+    formats: list[str] | None = None,
     write_log_file: bool = True,
-    write_custom: bool = True,
-    write_deduce: bool = True,
-    log_dir: Path | None = None,
-) -> Tuple[Path | None, Path | None]:
-    """Run the de‑identification workflow on a PDF file.
+    log_dir: Optional[Path] = None,
+) -> dict[str, Path]:
+    """Run the de-identification workflow on a PDF file.
 
-    The semantics are identical to :func:`deduce_pipeline.csv.run_pipeline`.
+    Args:
+        input_pdf: Path to the input PDF.
+        output_dir: Root output directory.  A sub-directory named after the
+            input stem is created inside it.
+        mode: Which de-identification variant(s) to produce: ``"deduce"``,
+            ``"custom"``, or ``"both"`` (default).
+        formats: Output format(s) to write — any subset of
+            ``["pdf", "txt", "json"]``.  Defaults to ``["pdf"]``.
+        write_log_file: Whether DEDUCE warnings are written to a log file.
+        log_dir: Directory for the log file; a temp directory is used when
+            ``None``.
+
+    Returns:
+        A dict mapping ``"<mode>_<format>"`` keys to the written
+        :class:`~pathlib.Path` objects (e.g. ``{"custom_pdf": ...,
+        "deduce_txt": ...}``).  Only keys for files that were actually
+        written are present.
+
+    Raises:
+        FileNotFoundError: If ``input_pdf`` does not exist.
+        RuntimeError: If no text could be extracted from the PDF.
     """
-    sd = core.init_deduce_secure(write_log_file=write_log_file, log_dir=log_dir)
+    if formats is None:
+        formats = ["pdf"]
 
+    input_pdf = Path(input_pdf)
     if not input_pdf.exists():
         raise FileNotFoundError(f"Input PDF not found: {input_pdf.resolve()}")
 
+    write_custom = mode in ("custom", "both")
+    write_deduce = mode in ("deduce", "both")
+
+    sd = core.init_deduce_secure(write_log_file=write_log_file, log_dir=log_dir)
+
     text = extract_text_from_pdf(input_pdf)
     if not text:
-        raise RuntimeError("no text extracted from PDF (empty or non‑textual)")
+        raise RuntimeError("No text extracted from PDF (empty or non-textual).")
 
     text = core.fix_cid_codes(text)
     text = core.preprocess_text(text)
@@ -64,81 +81,51 @@ def run_pipeline(
     if hasattr(doc, "annotations"):
         doc.annotations = core.filter_medical_terms(doc.annotations)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    doc_dir = Path(output_dir) / input_pdf.stem
+    doc_dir.mkdir(parents=True, exist_ok=True)
 
-    custom_out: Optional[Path] = None
-    deduce_out: Optional[Path] = None
+    written: dict[str, Path] = {}
 
-    if write_deduce and output_deduce_pdf:
-        core.write_text_to_pdf(
-            getattr(doc, "deidentified_text", ""),
-            output_deduce_pdf,
-            title="De‑identified (DEDUCE)"
-        )
-        deduce_out = output_deduce_pdf
+    if write_deduce:
+        deduce_text = getattr(doc, "deidentified_text", "")
+        stem = f"{input_pdf.stem}_deduce"
+        if "pdf" in formats:
+            p = doc_dir / f"{stem}.pdf"
+            core.write_text_to_pdf(deduce_text, p, "DEDUCE")
+            written["deduce_pdf"] = p
+        if "txt" in formats:
+            p = doc_dir / f"{stem}.txt"
+            core.write_text_to_txt(deduce_text, p)
+            written["deduce_txt"] = p
+        if "json" in formats:
+            p = doc_dir / f"{stem}.json"
+            admission, plan = core.split_sections(deduce_text)
+            core.write_text_to_json(deduce_text, p, input_pdf.name, admission, plan)
+            written["deduce_json"] = p
 
-    if write_custom and output_custom_pdf:
-        custom_text, _age_category = core.apply_custom_deidentification(doc, text)
+    if write_custom:
+        custom_text, _ = core.apply_custom_deidentification(doc, text)
         custom_text = core.anonymize_months(custom_text)
         custom_text = core.anonymize_years(custom_text)
-        core.write_text_to_pdf(
-            custom_text,
-            output_custom_pdf,
-            title="De‑identified (custom)"
-        )
-        custom_out = output_custom_pdf
+        stem = f"{input_pdf.stem}_custom"
+        if "pdf" in formats:
+            p = doc_dir / f"{stem}.pdf"
+            core.write_text_to_pdf(custom_text, p, "DEDUCE+CAR")
+            written["custom_pdf"] = p
+        if "txt" in formats:
+            p = doc_dir / f"{stem}.txt"
+            core.write_text_to_txt(custom_text, p)
+            written["custom_txt"] = p
+        if "json" in formats:
+            p = doc_dir / f"{stem}.json"
+            admission, plan = core.split_sections(custom_text)
+            core.write_text_to_json(custom_text, p, input_pdf.name, admission, plan)
+            written["custom_json"] = p
 
     print(f"Input PDF:  {input_pdf.resolve()}")
-    if custom_out:
-        print(f"Output PDF (custom): {custom_out.resolve()}")
-    if deduce_out:
-        print(f"Output PDF (DEDUCE): {deduce_out.resolve()}")
+    print(f"Output dir: {doc_dir.resolve()}")
     if sd.log_file:
-        print(f"Log (warnings): {sd.log_file.resolve()}")
+        print(f"Log:        {sd.log_file.resolve()}")
 
     core.close_logging_handlers()
-    return custom_out, deduce_out
-
-
-# -------- command-line interface --------
-
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="PDF → DEDUCE → PDF pipeline")
-    p.add_argument("--input", type=Path, default=INPUT_PDF, help="input PDF path")
-    p.add_argument("--outdir", type=Path, default=OUTPUT_DIR, help="output directory")
-    p.add_argument("--custom", type=Path, default=None, help="custom output PDF path (optional)")
-    p.add_argument("--deduce", type=Path, default=None, help="DEDUCE output PDF path (optional)")
-    p.add_argument("--no-logfile", action="store_true", help="do not write logfile")
-    p.add_argument(
-        "--output-mode",
-        choices=["custom", "deduce", "both"],
-        default="both",
-        help="which outputs to write",
-    )
-    return p.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
-    input_pdf = args.input
-    outdir = args.outdir
-    custom_pdf = args.custom if args.custom else (outdir / f"{input_pdf.stem}_deidentified_custom.pdf")
-    deduce_pdf = args.deduce if args.deduce else (outdir / f"{input_pdf.stem}_deidentified_deduce.pdf")
-    write_custom = args.output_mode in ("custom", "both")
-    write_deduce = args.output_mode in ("deduce", "both")
-    run_pipeline(
-        input_pdf=input_pdf,
-        output_custom_pdf=custom_pdf,
-        output_deduce_pdf=deduce_pdf,
-        output_dir=outdir,
-        write_log_file=not args.no_logfile,
-        write_custom=write_custom,
-        write_deduce=write_deduce,
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    import sys
-
-    raise SystemExit(main())
+    return written
