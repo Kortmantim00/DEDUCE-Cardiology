@@ -237,7 +237,7 @@ Applied on top of DEDUCE output:
 Eponymous terms are preserved to maintain clinical relevance: Glasgow, Barthel, Brugada, Wellens, De Winter, Wells, Sgarbossa, Murphy, circle of Willis, and many more. See `core.get_medical_terms_whitelist()` for the full list.
 
 <p align="center">
-  <img src="De-identification flow.png" alt="De-identification flow" width="820"/>
+  <img src="De-identification flow.png" alt="De-identification flow" width="1000"/>
 </p>
 
 ---
