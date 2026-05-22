@@ -10,12 +10,12 @@ A Python pipeline for de-identifying Dutch free-text in the domain of cardiology
 
 This pipeline was developed as part of a **clinical AI validation study at Erasmus MC**. The study validates a multi-agent, multi-modal clinical decision support tool based on LLMs and RAG on international cardiology guidelines.
 
-### Two-phase de-identification
+### Two-step de-identification
 
-| Phase | Method | Goal |
-|---|---|---|
-| **Phase 1 — Automated** | This pipeline (DEDUCE NER + custom post-processing) | Remove direct and quasi-identifiers |
-| **Phase 2 — Manual** | Two independent human reviewers | Verify output; ensure 100% recall |
+| Step | Description |
+|---|---|
+| **1 Original DEDUCE** | Utilizing the NER tool called DEDUCE for de-identification developed bij the UMCU (https://github.com/vmenger/deduce) |
+| **2 Custom post-processing** | Applied some custom improvements and adjustments for the cardiology domain. | 
 
 ### Identifier treatment
 
@@ -24,6 +24,18 @@ This pipeline was developed as part of a **clinical AI validation study at Erasm
 | **Direct identifiers** | Fully redacted | Names → `[PERSOON]`, phone → `[TELEFOONNUMMER]` |
 | **Quasi-identifiers** | Generalized | Age → `[Leeftijd >=50]`, dates → `[DATUM]`, years → `[JAAR -3]` |
 | **Clinical information** | Preserved | Eponymous scores, syndromes, anatomical structures |
+
+### Data types
+| Input | Output | 
+|---|---|
+| .csv | .csv |
+| .pdf | .pdf |
+|      | .txt | 
+|      | .json |
+
+<p align="center">
+  <img src="media/De-identification flow.png" alt="De-identification flow" width="1000"/>
+</p>
 
 ---
 
@@ -194,8 +206,8 @@ Each input file gets its own sub-folder inside `--outdir`:
 ```
 Output/
   document1/
-    document1_custom.pdf   ← custom post-processing
-    document1_deduce.pdf   ← raw DEDUCE output
+    document1_deduce.pdf   ← Only original DEDUCE output
+    document1_custom.pdf   ← + custom post-processing step
     document1_custom.txt
     document1_deduce.json
   data/
@@ -223,22 +235,16 @@ Applied on top of DEDUCE output:
 
 | Identifier type | Rule |
 |---|---|
-| Person names | All persons → `[PERSOON]` |
 | Age | Numeric age → `[Leeftijd >=50]` or `[Leeftijd <50]` |
+| Years (yyyy) | Newest year → `[JAAR 0]`, earlier → `[JAAR -1]`, `[JAAR -3]`, etc. |
 | Full dates (dd-mm-yyyy) | → `[DATUM]` |
 | Partial dates (dd/mm, dd-mm) | → `[DATUM]` |
-| Years (yyyy) | Newest year → `[JAAR 0]`, earlier → `[JAAR -1]`, `[JAAR -3]`, etc. |
 | Dutch month names | → `[MAAND]` |
-| Dosages like `3500IE` | Preserved (not treated as locations) |
-| Numbered DEDUCE tags (`[X-1]`) | Normalized to `[X]` |
+| Person names in cardiology jargon | → Perserved (whitelist) |
 
-#### Medical terms whitelist
+##### Medical terms whitelist
 
 Eponymous terms are preserved to maintain clinical relevance: Glasgow, Barthel, Brugada, Wellens, De Winter, Wells, Sgarbossa, Murphy, circle of Willis, and many more. See `core.get_medical_terms_whitelist()` for the full list.
-
-<p align="center">
-  <img src="media/De-identification flow.png" alt="De-identification flow" width="1000"/>
-</p>
 
 ---
 
