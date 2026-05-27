@@ -524,8 +524,8 @@ def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optiona
 
     The following rules are applied in order:
 
-    1. ``Age`` tags are replaced with either ``[Leeftijd >=50]`` or ``[Leeftijd <50]``
-       (numeric decoding; fall back to ``[Leeftijd onbekend]``).
+    1. ``Age`` tags are replaced with for examplle ''[LEEFTIJD 60-75]''
+       (numeric decoding; fall back to ``[LEEFTIJD onbekend]``).
     2. ``Person`` tags: the **first** one encountered in the annotations becomes
        ``[PATIËNT]``; all others are ``[PERSOON]``.
     3. A few other tags are mapped to fixed placeholders (email, phone,
@@ -562,10 +562,21 @@ def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optiona
         if tag in ("leeftijd", "age"):
             try:
                 age = int(orig)
-                age_category = "[Leeftijd >=50]" if age >= 50 else "[Leeftijd <50]"
+                if age < 35:
+                    age_category = "[LEEFTIJD <35]"
+                elif age < 50:
+                    age_category = "[LEEFTIJD 35-50]"
+                elif age < 65:
+                    age_category = "[LEEFTIJD 50-65]"
+                elif age < 70:
+                    age_category = "[LEEFTIJD 65-70]"
+                elif age < 75:
+                    age_category = "[LEEFTIJD 70-75]"
+                else
+                    age_category = "[LEEFTIJD 75+]"
                 placeholder = age_category
             except Exception:
-                age_category = "[Leeftijd onbekend]"
+                age_category = "[LEEFTIJD onbekend]"
                 placeholder = age_category
         elif tag == "persoon":
             placeholder = "[PERSOON]"
