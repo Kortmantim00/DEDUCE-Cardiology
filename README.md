@@ -4,7 +4,7 @@
 
 # DEDUCE De-identification Pipeline
 
-A Python pipeline for de-identifying Dutch free-text in the domain of cardiology, built on top of the [**DEDUCE**](https://pypi.org/project/deduce) library. Text can be sourced from PDF or CSV files and written to PDF, TXT, JSON, or CSV output. The pipeline is designed for secure, local execution without any external API calls.
+A Python pipeline for de-identifying Dutch free-text in the domain of cardiology, built on top of the [**DEDUCE**](https://pypi.org/project/deduce) library. Text can be sourced from PDF, CSV, or TXT files and written to PDF, TXT, JSON, or CSV output. The pipeline is designed for secure, local execution without any external API calls.
 
 ## Research context
 
@@ -22,16 +22,15 @@ This pipeline was developed as part of a **clinical AI validation study at Erasm
 | Category | Treatment | Examples |
 |---|---|---|
 | **Direct identifiers** | Fully redacted | Names → `[PERSOON]`, phone → `[TELEFOONNUMMER]` |
-| **Quasi-identifiers** | Generalized | Age → `[Leeftijd >=50]`, dates → `[DATUM]`, years → `[JAAR -3]` |
+| **Quasi-identifiers** | Generalized | Age → `[LEEFTIJD 50-65]`, dates → `[DATUM]`, years → `[JAAR -3]`, times → `[TIJD]`, weekdays → `[DAG]` |
 | **Clinical information** | Preserved | Eponymous scores, syndromes, anatomical structures |
 
 ### Data types
-| Input | Output | 
+| Input | Output |
 |---|---|
-| .csv | .csv |
-| .pdf | .pdf |
-|      | .txt | 
-|      | .json |
+| .pdf | .pdf, .txt, .json |
+| .csv | .csv, .pdf, .txt, .json |
+| .txt | .pdf, .txt, .json |
 
 <p align="center">
   <img src="media/De-identification flow.png" alt="De-identification flow" width="1000"/>
@@ -43,11 +42,12 @@ This pipeline was developed as part of a **clinical AI validation study at Erasm
 
 ```
 deduce_pipeline/
-    __init__.py       # unified run_pipeline() — auto-detects PDF vs CSV
+    __init__.py       # unified run_pipeline() — auto-detects PDF vs CSV vs TXT
     __main__.py       # CLI entry point:  python -m deduce_pipeline
     core.py           # shared utilities (DEDUCE init, text helpers, writers)
     pdf.py            # PDF-specific pipeline
     csv.py            # CSV-specific pipeline
+    txt.py            # TXT-specific pipeline
 main.py               # simple config-driven driver script
 tests/
     test_core.py
@@ -78,7 +78,7 @@ pip install pytest             # optional, for tests
 python -m deduce_pipeline INPUT [INPUT ...] [options]
 ```
 
-Input type (PDF or CSV) is **auto-detected from the file extension**.  
+Input type (PDF, CSV, or TXT) is **auto-detected from the file extension**.  
 Run `python -m deduce_pipeline --help` for the full option listing.
 
 #### Options
@@ -91,7 +91,7 @@ Run `python -m deduce_pipeline --help` for the full option listing.
 | `--no-logfile` | flag | — | Disable the DEDUCE warning log |
 | `--log-dir` | path | `Logs` | Directory for log files |
 
-**CSV-specific options** (ignored for PDF input):
+**CSV-specific options** (ignored for PDF/TXT input):
 
 | Option | Default | Description |
 |---|---|---|
@@ -118,6 +118,9 @@ from deduce_pipeline.csv import CsvConfig
 
 # PDF input
 run_pipeline(Path("Input/document.pdf"), mode="both", formats=["pdf", "txt"])
+
+# TXT input
+run_pipeline(Path("Input/document.txt"), mode="custom", formats=["pdf", "txt"])
 
 # CSV input — flat text output
 run_pipeline(Path("Input/data.csv"), mode="custom", formats=["pdf", "json"])
@@ -149,6 +152,8 @@ python -m deduce_pipeline <INPUT> --mode <MODE> --format <FORMAT(S)> [--outdir <
 | Single PDF | `Input/document1.pdf` |
 | Multiple PDFs | `Input/document1.pdf Input/document2.pdf` |
 | All PDFs in a folder | `Input/*.pdf` (shell glob) |
+| Single TXT | `Input/document1.txt` |
+| All TXTs in a folder | `Input/*.txt` (shell glob) |
 | Single CSV | `Input/data.csv` |
 
 ### Step 2 — Choose a mode
@@ -189,6 +194,9 @@ python -m deduce_pipeline Input/*.pdf --mode both --format pdf
 # Single PDF, custom mode only, all output formats
 python -m deduce_pipeline Input/document1.pdf --mode custom --format pdf txt json
 
+# All TXTs in Input/, custom mode, TXT output only
+python -m deduce_pipeline Input/*.txt --mode custom --format txt
+
 # CSV → CSV (cell-by-cell, preserve structure), skip the ID column
 python -m deduce_pipeline Input/data.csv --format csv --skip-columns PatientID
 
@@ -201,18 +209,26 @@ python -m deduce_pipeline Input/A.pdf Input/B.pdf --mode both --format pdf --out
 
 ### Output file naming
 
-Each input file gets its own sub-folder inside `--outdir`:
+Files are grouped inside `--outdir` under a **subject-level folder**, derived from the input path via `core.extract_subject_id`:
+
+| Layout | Example input | Subject ID |
+|---|---|---|
+| Flat | `Input/0001184_admission.pdf` | `0001184` |
+| Nested | `Input/1184/admission.pdf` | `1184` (parent folder name) |
+| Fallback | `Input/document1.pdf` | `document1` (filename stem) |
+
+Within each subject folder, output files are suffixed `_deidd` (original DEDUCE-only output) or `_deidc` (DEDUCE + custom post-processing). PDF and TXT input are prefixed with the subject ID; CSV flat-text output uses the input filename stem only:
 
 ```
 Output/
-  document1/
-    document1_deduce.pdf   ← Only original DEDUCE output
-    document1_custom.pdf   ← + custom post-processing step
-    document1_custom.txt
-    document1_deduce.json
+  1184/
+    1184_admission_deidd.pdf   ← Only original DEDUCE output
+    1184_admission_deidc.pdf   ← + custom post-processing step
+    1184_admission_deidc.txt
+    1184_admission_deidd.json
   data/
-    data_custom.csv
-    data_deduce.csv
+    data_deidc.csv
+    data_deidd.csv
 ```
 
 ---
@@ -221,7 +237,7 @@ Output/
 
 ### 1. Preprocessing
 
-- **Text extraction**: `pdfplumber` (PDF) or row concatenation (CSV flat-text mode)
+- **Text extraction**: `pdfplumber` (PDF), row concatenation (CSV flat-text mode), or a plain UTF-8 read (TXT)
 - **CID code replacement**: `(cid:431)` → `ff`, `(cid:432)` → `ffi`, `(cid:433)` → `ffl`
 - **CamelCase splitting**: `drNaamJohannes` → `dr Naam Johannes`
 
@@ -235,12 +251,15 @@ Applied on top of DEDUCE output:
 
 | Identifier type | Rule |
 |---|---|
-| Age | Numeric age → `[Leeftijd >=50]` or `[Leeftijd <50]` |
+| Age | Numeric age → `[LEEFTIJD <35]`, `[LEEFTIJD 35-50]`, `[LEEFTIJD 50-65]`, `[LEEFTIJD 65-70]`, `[LEEFTIJD 70-75]`, or `[LEEFTIJD 75+]`; non-numeric → `[LEEFTIJD ONBEKEND]` |
 | Years (yyyy) | Newest year → `[JAAR 0]`, earlier → `[JAAR -1]`, `[JAAR -3]`, etc. |
 | Full dates (dd-mm-yyyy) | → `[DATUM]` |
 | Partial dates (dd/mm, dd-mm) | → `[DATUM]` |
 | Dutch month names | → `[MAAND]` |
-| Person names in cardiology jargon | → Perserved (whitelist) |
+| Clock times (`14:30`, `9u`, `14 uur`) | → `[TIJD]` |
+| Weekdays, abbreviations, named "dag" occasions (`verjaardag`, `kerstdag`, ...) | → `[DAG]` |
+| Known staff names, hospitals, countries, languages missed by DEDUCE | → `[PERSOON]`, `[ZIEKENHUIS]`, `[LAND]`, `[TAAL]` (fixed term lists in `core.py`) |
+| Person names in cardiology jargon | → Preserved (whitelist) |
 
 ##### Medical terms whitelist
 
@@ -263,7 +282,7 @@ Eponymous terms are preserved to maintain clinical relevance: Glasgow, Barthel, 
 python -m pytest
 ```
 
-All 32 tests cover core utilities, both pipelines, all output formats, and the CLI.
+All 36 tests cover core utilities, the PDF and CSV pipelines, all output formats, and the CLI. (The TXT pipeline currently has no dedicated tests.)
 
 ---
 
