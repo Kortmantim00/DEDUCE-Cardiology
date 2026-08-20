@@ -4,7 +4,7 @@ Usage::
 
     python -m deduce_pipeline INPUT [INPUT ...] [options]
 
-The input type (PDF or CSV) is auto-detected from the file extension.
+The input type (PDF, CSV, or TXT) is auto-detected from the file extension.
 Run ``python -m deduce_pipeline --help`` for a full option listing.
 """
 
@@ -23,13 +23,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="python -m deduce_pipeline",
         description=(
             "DEDUCE de-identification pipeline. "
-            "Input type (PDF/CSV) is auto-detected from the file extension."
+            "Input type (PDF/CSV/TXT) is auto-detected from the file extension."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  python -m deduce_pipeline Input/doc.pdf\n"
             "  python -m deduce_pipeline Input/*.pdf --mode custom --format pdf txt\n"
+            "  python -m deduce_pipeline Input/*.txt --mode custom --format txt\n"
             "  python -m deduce_pipeline Input/data.csv --format csv\n"
             "  python -m deduce_pipeline Input/data.csv --format pdf json --mode deduce\n"
         ),
@@ -37,7 +38,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     p.add_argument(
         "inputs", nargs="+", type=Path, metavar="INPUT",
-        help="One or more input files (.pdf or .csv).",
+        help="One or more input files (.pdf, .csv, or .txt).",
     )
     p.add_argument(
         "--outdir", type=Path, default=Path("Output"), metavar="DIR",

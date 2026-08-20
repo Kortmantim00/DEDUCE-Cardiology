@@ -1,82 +1,35 @@
-"""PDF → DEDUCE → PDF/TXT/JSON pipeline."""
+"""TXT → DEDUCE → PDF/TXT/JSON pipeline."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
 
-import pdfplumber
 from . import core
 
 OUTPUT_DIR: Path = Path("Output")
 
 
-def extract_text_from_pdf(pdf_path: Path) -> str:
-    """Extract all readable text from a PDF using pdfplumber.
-
-    Pages are separated by double newlines.  Returns an empty string when
-    no text can be extracted.
-    """
-    text_parts: list[str] = []
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                text_parts.append(page_text)
-    return "\n\n".join(text_parts).strip()
-
-
-def extract_title_from_pdf(pdf_path: Path) -> str:
-    """Extract a human-readable title from a PDF.
-
-    Strategy (first match wins):
-
-    1. ``Title`` field in the PDF metadata (if non-empty).
-    2. First non-empty line of text on the first page.
-    3. The filename stem as a last-resort fallback.
-
-    Args:
-        pdf_path: Path to the source PDF.
-
-    Returns:
-        A short title string suitable for use as a document heading.
-    """
-    try:
-        with pdfplumber.open(str(pdf_path)) as pdf:
-            # 1. Metadata title
-            meta = pdf.metadata or {}
-            title = meta.get("Title") or meta.get("title") or ""
-            if title.strip():
-                return title.strip()
-
-            # 2. First non-empty line of the first page
-            for page in pdf.pages:
-                text = page.extract_text() or ""
-                for line in text.splitlines():
-                    line = line.strip()
-                    if line:
-                        return line
-    except Exception:
-        pass
-
-    # 3. Fallback: filename stem
-    return pdf_path.stem
+def read_text_from_txt(txt_path: Path) -> str:
+    """Read all text from a plain-text file."""
+    with open(str(txt_path), encoding="utf-8") as f:
+        return f.read()
 
 
 def run_pipeline(
-    input_pdf: Path,
+    input_txt: Path,
     output_dir: Path = OUTPUT_DIR,
     mode: str = "both",
     formats: list[str] | None = None,
     write_log_file: bool = True,
     log_dir: Optional[Path] = None,
 ) -> dict[str, Path]:
-    """Run the de-identification workflow on a PDF file.
+    """Run the de-identification workflow on a TXT file.
 
     Args:
-        input_pdf: Path to the input PDF.
+        input_txt: Path to the input TXT.
         output_dir: Root output directory.  A sub-directory named after the
-            input stem is created inside it.
+            subject id is created inside it.
         mode: Which de-identification variant(s) to produce: ``"deduce"``,
             ``"custom"``, or ``"both"`` (default).
         formats: Output format(s) to write — any subset of
@@ -86,30 +39,30 @@ def run_pipeline(
             ``None``.
 
     Returns:
-        A dict mapping ``"<mode>_<format>"`` keys to the written
-        :class:`~pathlib.Path` objects (e.g. ``{"custom_pdf": ...,
-        "deduce_txt": ...}``).  Only keys for files that were actually
+        A dict mapping ``"<variant>_<format>"`` keys to the written
+        :class:`~pathlib.Path` objects (e.g. ``{"deidc_pdf": ...,
+        "deidd_txt": ...}``).  Only keys for files that were actually
         written are present.
 
     Raises:
-        FileNotFoundError: If ``input_pdf`` does not exist.
-        RuntimeError: If no text could be extracted from the PDF.
+        FileNotFoundError: If ``input_txt`` does not exist.
+        RuntimeError: If the TXT contains no text.
     """
     if formats is None:
         formats = ["pdf"]
 
-    input_pdf = Path(input_pdf)
-    if not input_pdf.exists():
-        raise FileNotFoundError(f"Input PDF not found: {input_pdf.resolve()}")
+    input_txt = Path(input_txt)
+    if not input_txt.exists():
+        raise FileNotFoundError(f"Input TXT not found: {input_txt.resolve()}")
 
     write_custom = mode in ("custom", "both")
     write_deduce = mode in ("deduce", "both")
 
     sd = core.init_deduce_secure(write_log_file=write_log_file, log_dir=log_dir)
 
-    text = extract_text_from_pdf(input_pdf)
+    text = read_text_from_txt(input_txt)
     if not text:
-        raise RuntimeError("No text extracted from PDF (empty or non-textual).")
+        raise RuntimeError("No text extracted from TXT (file is empty).")
 
     text = core.fix_cid_codes(text)
     text = core.preprocess_text(text)
@@ -119,7 +72,7 @@ def run_pipeline(
         doc.annotations = core.filter_medical_terms(doc.annotations)
 
     # Group output under a subject-level folder (part before _admission/_decision)
-    subject_id = core.extract_subject_id(input_pdf)
+    subject_id = core.extract_subject_id(input_txt)
     doc_dir = Path(output_dir) / subject_id
     doc_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,7 +80,7 @@ def run_pipeline(
 
     if write_deduce:
         deduce_text = getattr(doc, "deidentified_text", "")
-        stem = f"{subject_id}_{input_pdf.stem}_deidd"
+        stem = f"{subject_id}_{input_txt.stem}_deidd"
         if "pdf" in formats:
             p = doc_dir / f"{stem}.pdf"
             core.write_text_to_pdf(deduce_text, p)
@@ -139,7 +92,7 @@ def run_pipeline(
         if "json" in formats:
             p = doc_dir / f"{stem}.json"
             admission, plan = core.split_sections(deduce_text)
-            core.write_text_to_json(deduce_text, p, input_pdf.name, admission, plan)
+            core.write_text_to_json(deduce_text, p, input_txt.name, admission, plan)
             written["deidd_json"] = p
 
     if write_custom:
@@ -148,7 +101,7 @@ def run_pipeline(
         custom_text = core.anonymize_years(custom_text)
         custom_text = core.anonymize_times(custom_text)
         custom_text = core.anonymize_days(custom_text)
-        stem = f"{subject_id}_{input_pdf.stem}_deidc"
+        stem = f"{subject_id}_{input_txt.stem}_deidc"
         if "pdf" in formats:
             p = doc_dir / f"{stem}.pdf"
             core.write_text_to_pdf(custom_text, p)
@@ -160,10 +113,10 @@ def run_pipeline(
         if "json" in formats:
             p = doc_dir / f"{stem}.json"
             admission, plan = core.split_sections(custom_text)
-            core.write_text_to_json(custom_text, p, input_pdf.name, admission, plan)
+            core.write_text_to_json(custom_text, p, input_txt.name, admission, plan)
             written["deidc_json"] = p
 
-    print(f"Input PDF:  {input_pdf.resolve()}")
+    print(f"Input TXT:  {input_txt.resolve()}")
     print(f"Output dir: {doc_dir.resolve()}")
     if sd.log_file:
         print(f"Log:        {sd.log_file.resolve()}")

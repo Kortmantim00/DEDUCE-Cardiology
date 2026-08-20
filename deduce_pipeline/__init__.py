@@ -5,6 +5,7 @@ auto-detects the input type from the file extension:
 
 * ``.pdf`` → :func:`deduce_pipeline.pdf.run_pipeline`
 * ``.csv`` → :func:`deduce_pipeline.csv.run_pipeline`
+* ``.txt`` → :func:`deduce_pipeline.txt.run_pipeline`
 
 Example::
 
@@ -13,6 +14,7 @@ Example::
 
     run_pipeline(Path("Input/document.pdf"), output_dir=Path("Output"))
     run_pipeline(Path("Input/data.csv"), formats=["csv"], mode="custom")
+    run_pipeline(Path("Input/document.txt"), output_dir=Path("Output"))
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ def run_pipeline(
     """Unified pipeline that auto-detects the input type from the file extension.
 
     Args:
-        input_file: Path to a PDF or CSV file.
+        input_file: Path to a PDF, CSV, or TXT file.
         output_dir: Root output directory.  A sub-directory named after the
             input stem is created inside it.
         mode: De-identification mode: ``"deduce"``, ``"custom"``, or
@@ -47,9 +49,10 @@ def run_pipeline(
             (CSV input only).
 
     Returns:
-        A dict mapping ``"<mode>_<format>"`` keys to the written
+        A dict mapping ``"<variant>_<format>"`` keys to the written
         :class:`~pathlib.Path` objects, e.g.
-        ``{"custom_pdf": ..., "deduce_txt": ...}``.
+        ``{"deidc_pdf": ..., "deidd_txt": ...}``.
+        ``deidc`` = custom (DEDUCE + CAR) variant; ``deidd`` = DEDUCE-only variant.
 
     Raises:
         FileNotFoundError: If the input file does not exist.
@@ -64,6 +67,16 @@ def run_pipeline(
             mode=mode,
             formats=formats,
             config=csv_config,
+            write_log_file=write_log_file,
+            log_dir=log_dir,
+        )
+    elif p.suffix.lower() == ".txt":
+        from .txt import run_pipeline as _run
+        return _run(
+            input_txt=p,
+            output_dir=Path(output_dir),
+            mode=mode,
+            formats=formats,
             write_log_file=write_log_file,
             log_dir=log_dir,
         )

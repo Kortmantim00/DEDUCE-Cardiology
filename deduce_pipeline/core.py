@@ -7,7 +7,7 @@ pipelines, making the code easier to maintain and review. It includes:
 temporary cache directories and optional logging
 * PDF writing helpers (ReportLab wrappers)
 * Text preprocessing, CID code fixes, and anonymization helpers
-* Custom de‑identification post‑processing on top of DEDUCE output
+* Custom deidentification postprocessing on top of DEDUCE output
 
 All functions are written in English and thoroughly documented for
 GitHub representation.
@@ -151,25 +151,22 @@ def _register_font_if_available() -> str:
     return "Helvetica"
 
 
-def write_text_to_pdf(text: str, output_pdf: Path, title: str) -> None:
+def write_text_to_pdf(text: str, output_pdf: Path) -> None:
     """Render ``text`` into a simple PDF document.
 
     Paragraph wrapping and basic styling are handled via ReportLab's
-    :class:`SimpleDocTemplate` and default stylesheet.
+    :class:`SimpleDocTemplate` and default stylesheet.  No title heading
+    is added to the output.
 
     Args:
         text: The body text to write.  Blank strings are accepted.
         output_pdf: Destination file (parent directories will be created).
-        title: Title to display on the first page.
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
 
     font_name = _register_font_if_available()
 
     styles = getSampleStyleSheet()
-    title_style = styles["Title"]
-    title_style.fontName = font_name
-
     normal = styles["Normal"]
     normal.fontName = font_name
     normal.fontSize = 11
@@ -184,7 +181,7 @@ def write_text_to_pdf(text: str, output_pdf: Path, title: str) -> None:
         bottomMargin=24,
     )
 
-    story = [Paragraph(title, title_style), Spacer(1, 12)]
+    story: list = []
     for para in (text or "").split("\n\n"):
         para = para.replace("\n", "<br/>")
         story.append(Paragraph(para, normal))
@@ -227,7 +224,47 @@ def write_text_to_json(
 
 # Names not reliably detected by DEDUCE that should always become [PERSOON]
 _CUSTOM_PERSON_NAMES: list[str] = [
-    "Jewbali", "Boon", "Dubois", "Akkerhuis", "Bunge", "Kimmann", "Ghossein",
+    "Jewbali", "Boon", "van der Boon", "vd Boon", "Dubois", "Akkerhuis", "Bunge", "Kimmann", "Kimman",
+    "Ghossein", "Mahmoodi", "Mahmoudi", "Yap", "Bhagwandien", "Leening", "Wijchers", "Feyz", "Gho", "van Gils", "v Gils", "Gils",
+    "Radhoe", "Hirsch", "Kauling", "Brugts", "Schinkel", "Constantinescu", "Price", "Zwetsloot", "Caliskan",
+]
+
+# Hospitals/institutions not reliably detected by DEDUCE → [ZIEKENHUIS]
+_CUSTOM_HOSPITAL_TERMS: list[str] = [
+    "reinier de graaf", "reinier", "SFG", "Sint Fransiscus Gasthuis", "Fransiscus Gasthuis", "Fransiscus",
+    "YSL", "IJsselland", "maasstad", "maasstadziekenhuis",
+]
+
+# Country names → [LAND]
+_CUSTOM_COUNTRY_TERMS: list[str] = [
+    "Nederland", "Duitsland", "Marokko", "Turkije", "Suriname", "Italie", "Hongkong", "China", "Japan",
+    "Engeland", "Belgie", "Spanje", "Amerika", "Verenigde Staten", "Canada", "Oekraine", "Dominicaanse Republiek",
+    "Griekenland", "Curacao", "Georgie", "Rusland", "Frankrijk", "Portugal", "ierland",
+    "Kaapverdie", "Irak", "Iran", "Syrie", "Indonesie", "India", "Denemarken", "Zuid-Afrika", "Zweden", "Noorwegen",
+    "Polen", "Roemenie", "Aruba", "Bulgarije", "Australie", "Oostenrijk", "Zwitserland", "Finland", "Singapore",
+]
+
+# Language names → [TAAL]
+_CUSTOM_LANGUAGE_TERMS: list[str] = [
+    "Engels", "Arabisch", "Turks", "Marokkaans", "Duits", "Russisch", "Nederlands", "Portugees", "Frans", "Italiaans", "Spaans", "Pools", "Roemeens", "Bulgaars",
+]
+
+# Weekday names → [DAG], optionally fused with a day-part suffix
+# (e.g. "maandagochtend", "vrijdagavond")
+_WEEKDAY_TERMS: list[str] = [
+    "maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag",
+]
+_WEEKDAY_DAYPART_SUFFIXES: list[str] = ["ochtend", "middag", "avond", "nacht"]
+
+# 2-letter weekday abbreviations → [DAG]
+_WEEKDAY_ABBR_TERMS: list[str] = ["ma", "di", "wo", "do", "vr", "za", "zo"]
+
+# Named "dag" holidays/occasions → [DAG]
+_NAMED_DAY_TERMS: list[str] = [
+    "kerstdag", "paasdag", "hemelvaartsdag", "pinksterdag", "koningsdag",
+    "bevrijdingsdag", "onafhankelijkheidsdag", "verjaardag", "dierendag",
+    "moederdag", "vaderdag", "sterfdag", "geboortedag", "nieuwjaarsdag",
+    "oudjaarsdag", "trouwdag", "valentijnsdag", "prinsjesdag",
 ]
 
 # (prefix, bucket) — prefix is matched case-insensitively at line start
@@ -238,12 +275,11 @@ _SECTION_RULES: list[tuple[str, str]] = [
     ("anamnese",                  "admission"),
     ("allergi",                   "admission"),  # allergieën, allergies
     ("lichamelijk onderzoek",     "admission"),
-    ("electrocardiogram",         "admission"),
+    ("aanvullend onderzoek",      "admission"),
     ("laboratorium",              "admission"),  # laboratorium onderzoek / laboratoriumonderzoek
-    ("radiologie",                "admission"),
-    ("echocardiogram",            "admission"),
-    ("coronairangiogram",         "admission"),
-    ("klinische elektrofysiologie", "admission"),
+    ("echo",                      "admission"),
+    ("ECG",                       "admission"),
+    ("X-thorax",                  "admission"),
     ("bespreking",                "plan"),
     ("conclusie",                 "plan"),
     ("beleid",                    "plan"),
@@ -317,6 +353,37 @@ def preprocess_text(text: str) -> str:
 
 # the whitelist is reused by both pipelines; exposing getter makes it easier
 # to test
+
+def extract_subject_id(input_path: "Path") -> str:
+    """Extract the subject ID from an input file path.
+
+    Two layouts are supported:
+
+    * **Flat** — the subject ID is embedded in the filename:
+      ``Input/0001184_admission.pdf`` → ``"0001184"``
+    * **Nested** — the file lives in a subject subfolder:
+      ``Input/1184/admission.pdf`` → ``"1184"``
+
+    Falls back to the filename stem for any other layout.
+
+    Examples::
+
+        extract_subject_id(Path("Input/0001184_admission.pdf"))  → "0001184"
+        extract_subject_id(Path("Input/1184/admission.pdf"))     → "1184"
+        extract_subject_id(Path("Input/document1.pdf"))          → "document1"
+    """
+    stem = input_path.stem
+    # Pattern 1: subject ID is part of the filename, e.g. '0001184_admission'
+    m = re.match(r"^(.+?)_(admission|decision)", stem, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    # Pattern 2: filename is 'admission' or 'decision' → use parent folder name
+    if re.match(r"^(admission|decision)$", stem, re.IGNORECASE):
+        parent = input_path.parent.name
+        if parent:
+            return parent
+    return stem
+
 
 def get_medical_terms_whitelist() -> set[str]:
     """Return a set of lowercase medical terms that should *not* be
@@ -519,17 +586,72 @@ def anonymize_years(text: str) -> str:
     return result
 
 
+def _replace_custom_terms(text: str, terms: Iterable[str], placeholder: str) -> str:
+    """Replace whole-word occurrences of any of ``terms`` with ``placeholder``.
+
+    Matching is case-insensitive. Longer (multi-word) terms are replaced
+    before shorter ones so that e.g. "Reinier de Graaf" is matched before a
+    leftover standalone "Reinier".
+    """
+    out = text
+    for term in sorted(set(terms), key=len, reverse=True):
+        out = re.sub(rf"\b{re.escape(term)}\b", placeholder, out, flags=re.IGNORECASE)
+    return out
+
+
+def anonymize_times(text: str) -> str:
+    """Replace clock-time expressions with ``[TIJD]``.
+
+    Recognised formats (``n`` = a single digit 0-9), matched in this order
+    so that e.g. ``"14:30u"`` is consumed whole before the trailing ``"u"``
+    pattern can match it separately:
+
+    * ``nn:nn`` / ``n:nn`` / ``nn:nnu`` — e.g. "14:30", "9:05", "14:30u"
+    * ``nnu`` / ``nu`` / ``nn u`` / ``n u`` — e.g. "14u", "9u", "14 u", "9 u"
+    * ``nn uur`` / ``n uur`` — e.g. "14 uur", "9 uur"
+    """
+    result = re.sub(r"\b\d{1,2}:\d{2}u?\b", "[TIJD]", text)
+    result = re.sub(r"\b\d{1,2}\s?u\b", "[TIJD]", result)
+    result = re.sub(r"\b\d{1,2}\s+uur\b", "[TIJD]", result)
+    return result
+
+
+def anonymize_days(text: str) -> str:
+    """Replace day references with ``[DAG]``.
+
+    Covers, in order:
+
+    1. Weekday names, optionally fused with a day-part suffix (e.g.
+       "maandagochtend", "vrijdagavond"). A bare day-part word
+       ("ochtend" on its own) is left untouched.
+    2. 2-letter weekday abbreviations ("ma", "di", ...).
+    3. Named "dag" holidays/occasions ("verjaardag", "kerstdag", ...).
+    """
+    weekday_alt = "|".join(re.escape(d) for d in _WEEKDAY_TERMS)
+    daypart_alt = "|".join(re.escape(d) for d in _WEEKDAY_DAYPART_SUFFIXES)
+    abbr_alt = "|".join(re.escape(d) for d in _WEEKDAY_ABBR_TERMS)
+    named_alt = "|".join(re.escape(d) for d in sorted(_NAMED_DAY_TERMS, key=len, reverse=True))
+
+    result = re.sub(rf"\b(?:{weekday_alt})(?:{daypart_alt})?\b", "[DAG]", text, flags=re.IGNORECASE)
+    result = re.sub(rf"\b(?:{abbr_alt})\b", "[DAG]", result, flags=re.IGNORECASE)
+    result = re.sub(rf"\b(?:{named_alt})\b", "[DAG]", result, flags=re.IGNORECASE)
+    return result
+
+
 def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optional[str]]:
     """Perform additional anonymization on top of a *Deduce* result.
 
     The following rules are applied in order:
 
-    1. ``Age`` tags are replaced with for examplle ''[LEEFTIJD 60-75]''
-       (numeric decoding; fall back to ``[LEEFTIJD onbekend]``).
+    1. ``Age`` tags are replaced with either ``[Leeftijd >=50]`` or ``[Leeftijd <50]``
+       (numeric decoding; fall back to ``[Leeftijd onbekend]``).
     2. ``Person`` tags: the **first** one encountered in the annotations becomes
        ``[PATIËNT]``; all others are ``[PERSOON]``.
     3. A few other tags are mapped to fixed placeholders (email, phone,
        location); all others are replaced with ``[TAG]``.
+    4. Names, hospitals, countries, and languages not reliably detected by
+       DEDUCE are replaced via fixed term lists (``[PERSOON]``,
+       ``[ZIEKENHUIS]``, ``[LAND]``, ``[TAAL]``).
 
     After this function returns the caller may wish to run
     :func:`anonymize_months` and :func:`anonymize_years` on the output.
@@ -572,11 +694,11 @@ def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optiona
                     age_category = "[LEEFTIJD 65-70]"
                 elif age < 75:
                     age_category = "[LEEFTIJD 70-75]"
-                else
+                else:
                     age_category = "[LEEFTIJD 75+]"
                 placeholder = age_category
             except Exception:
-                age_category = "[LEEFTIJD onbekend]"
+                age_category = "[LEEFTIJD ONBEKEND]"
                 placeholder = age_category
         elif tag == "persoon":
             placeholder = "[PERSOON]"
@@ -600,8 +722,10 @@ def apply_custom_deidentification(doc, original_text: str) -> Tuple[str, Optiona
     # Normalize numbered DEDUCE tags: [PERSOON-1] → [PERSOON], [ZIEKENHUIS-1] → [ZIEKENHUIS]
     out = re.sub(r"\[([A-Z]+)-\d+\]", r"[\1]", out)
 
-    # Replace names not caught by DEDUCE
-    for name in _CUSTOM_PERSON_NAMES:
-        out = re.sub(rf"\b{re.escape(name)}\b", "[PERSOON]", out, flags=re.IGNORECASE)
+    # Replace names, hospitals, countries, and languages not caught by DEDUCE
+    out = _replace_custom_terms(out, _CUSTOM_PERSON_NAMES, "[PERSOON]")
+    out = _replace_custom_terms(out, _CUSTOM_HOSPITAL_TERMS, "[ZIEKENHUIS]")
+    out = _replace_custom_terms(out, _CUSTOM_COUNTRY_TERMS, "[LAND]")
+    out = _replace_custom_terms(out, _CUSTOM_LANGUAGE_TERMS, "[TAAL]")
 
     return out, age_category

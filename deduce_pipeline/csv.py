@@ -72,6 +72,11 @@ class CsvConfig:
         Replace Dutch month names with ``[MAAND]``.
     anonymize_years : bool
         Replace 4-digit years with relative placeholders.
+    anonymize_times : bool
+        Replace clock-time expressions with ``[TIJD]``.
+    anonymize_days : bool
+        Replace weekday names, abbreviations, and named "dag" occasions
+        with ``[DAG]``.
     """
 
     # CSV format
@@ -94,6 +99,8 @@ class CsvConfig:
     # Post-processing
     anonymize_months: bool = True
     anonymize_years: bool = True
+    anonymize_times: bool = True
+    anonymize_days: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +180,10 @@ def _deidentify_cell(
             custom_text = core.anonymize_months(custom_text)
         if config.anonymize_years:
             custom_text = core.anonymize_years(custom_text)
+        if config.anonymize_times:
+            custom_text = core.anonymize_times(custom_text)
+        if config.anonymize_days:
+            custom_text = core.anonymize_days(custom_text)
 
         return custom_text, getattr(doc, "deidentified_text", text)
 
@@ -234,7 +245,9 @@ def run_pipeline(
     write_custom = mode in ("custom", "both")
     write_deduce = mode in ("deduce", "both")
 
-    doc_dir = Path(output_dir) / input_csv.stem
+    # Group output under a subject-level folder (part before _admission/_decision)
+    subject_id = core.extract_subject_id(input_csv)
+    doc_dir = Path(output_dir) / subject_id
     doc_dir.mkdir(parents=True, exist_ok=True)
 
     sd = core.init_deduce_secure(write_log_file=write_log_file, log_dir=log_dir)
@@ -255,39 +268,41 @@ def run_pipeline(
 
         if write_deduce:
             deduce_text = getattr(doc, "deidentified_text", "")
-            stem = f"{input_csv.stem}_deduce"
+            stem = f"{input_csv.stem}_deidd"
             if "pdf" in flat_formats:
                 p = doc_dir / f"{stem}.pdf"
-                core.write_text_to_pdf(deduce_text, p, "DEDUCE")
-                written["deduce_pdf"] = p
+                core.write_text_to_pdf(deduce_text, p)
+                written["deidd_pdf"] = p
             if "txt" in flat_formats:
                 p = doc_dir / f"{stem}.txt"
                 core.write_text_to_txt(deduce_text, p)
-                written["deduce_txt"] = p
+                written["deidd_txt"] = p
             if "json" in flat_formats:
                 p = doc_dir / f"{stem}.json"
                 admission, plan = core.split_sections(deduce_text)
                 core.write_text_to_json(deduce_text, p, input_csv.name, admission, plan)
-                written["deduce_json"] = p
+                written["deidd_json"] = p
 
         if write_custom:
             custom_text, _ = core.apply_custom_deidentification(doc, text)
             custom_text = core.anonymize_months(custom_text)
             custom_text = core.anonymize_years(custom_text)
-            stem = f"{input_csv.stem}_custom"
+            custom_text = core.anonymize_times(custom_text)
+            custom_text = core.anonymize_days(custom_text)
+            stem = f"{input_csv.stem}_deidc"
             if "pdf" in flat_formats:
                 p = doc_dir / f"{stem}.pdf"
-                core.write_text_to_pdf(custom_text, p, "DEDUCE+CAR")
-                written["custom_pdf"] = p
+                core.write_text_to_pdf(custom_text, p)
+                written["deidc_pdf"] = p
             if "txt" in flat_formats:
                 p = doc_dir / f"{stem}.txt"
                 core.write_text_to_txt(custom_text, p)
-                written["custom_txt"] = p
+                written["deidc_txt"] = p
             if "json" in flat_formats:
                 p = doc_dir / f"{stem}.json"
                 admission, plan = core.split_sections(custom_text)
                 core.write_text_to_json(custom_text, p, input_csv.name, admission, plan)
-                written["custom_json"] = p
+                written["deidc_json"] = p
 
     # ------------------------------------------------------------------ #
     # Cell-by-cell output: csv                                            #
@@ -350,13 +365,13 @@ def run_pipeline(
                 w.writerows(rows)
 
         if write_custom:
-            p = doc_dir / f"{input_csv.stem}_custom.csv"
+            p = doc_dir / f"{input_csv.stem}_deidc.csv"
             _write_csv_file(p, proc_header_custom, custom_rows)
-            written["custom_csv"] = p
+            written["deidc_csv"] = p
         if write_deduce:
-            p = doc_dir / f"{input_csv.stem}_deduce.csv"
+            p = doc_dir / f"{input_csv.stem}_deidd.csv"
             _write_csv_file(p, proc_header_deduce, deduce_rows)
-            written["deduce_csv"] = p
+            written["deidd_csv"] = p
 
     print(f"Input CSV:  {input_csv.resolve()}")
     print(f"Output dir: {doc_dir.resolve()}")
